@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "video-transcribe"
+version = "0.1.0"
+description = "CLI tool to transcribe video files using NVIDIA Parakeet v3 (MLX port for Apple Silicon)"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "parakeet-mlx>=0.1.0",
+]
+
+[project.scripts]
+video-transcribe = "video_transcribe.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/video_transcribe"]
