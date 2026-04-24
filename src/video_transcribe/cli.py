@@ -11,13 +11,13 @@ import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .audio import AudioExtractionError, extract_audio
+from .audio import AudioExtractionError, extract_audio, is_audio_file
 from .formats import save_transcript
 from .transcribe import TranscriptionError, transcribe_audio
 
 app = typer.Typer(
     name="video-transcribe",
-    help="Transcribe video files to text using Parakeet MLX (Apple Silicon).",
+    help="Transcribe video and audio files to text using Parakeet MLX (Apple Silicon).",
     add_completion=False,
 )
 console = Console()
@@ -34,10 +34,10 @@ class OutputFormat(str, Enum):
 
 @app.command()
 def main(
-    video_path: Annotated[
+    input_path: Annotated[
         Path,
         typer.Argument(
-            help="Path to the video file to transcribe.",
+            help="Path to the video or audio file to transcribe.",
             exists=True,
             dir_okay=False,
             resolve_path=True,
@@ -48,7 +48,7 @@ def main(
         typer.Option(
             "-o",
             "--output",
-            help="Output file path. Defaults to video name with appropriate extension.",
+            help="Output file path. Defaults to input filename with appropriate extension.",
         ),
     ] = None,
     format: Annotated[
@@ -86,38 +86,41 @@ def main(
         bool,
         typer.Option(
             "--keep-audio",
-            help="Keep the extracted audio file.",
+            help="Keep the extracted/converted audio file.",
         ),
     ] = False,
 ) -> None:
     """
-    Transcribe a video file to text with timestamps.
+    Transcribe a video or audio file to text with timestamps.
 
     Examples:
 
         video-transcribe video.mp4
 
-        video-transcribe video.mp4 --format json --word-timestamps
+        video-transcribe audio.mp3 --format json --word-timestamps
 
-        video-transcribe video.mp4 -o transcript.srt
+        video-transcribe podcast.m4a -o transcript.srt
     """
     # Determine output path
     if output is None:
-        output = video_path.with_suffix(f".{format.value}")
+        output = input_path.with_suffix(f".{format.value}")
 
     audio_path: Optional[Path] = None
 
     try:
-        # Step 1: Extract audio
+        # Step 1: Extract/convert audio
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            progress.add_task("Extracting audio from video...", total=None)
-            audio_path = extract_audio(video_path)
+            if is_audio_file(input_path):
+                progress.add_task("Converting audio to required format...", total=None)
+            else:
+                progress.add_task("Extracting audio from video...", total=None)
+            audio_path = extract_audio(input_path)
 
-        console.print(f"[green]✓[/green] Audio extracted: {audio_path}")
+        console.print(f"[green]✓[/green] Audio ready: {audio_path}")
 
         # Step 2: Transcribe
         with Progress(
