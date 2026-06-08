@@ -1,9 +1,10 @@
-"""Transcription using Parakeet MLX."""
+"""Core data types and backend dispatch for transcription."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass
@@ -13,6 +14,7 @@ class Word:
     text: str
     start: float
     end: float
+    speaker: Optional[str] = None
 
 
 @dataclass
@@ -22,7 +24,8 @@ class Segment:
     text: str
     start: float
     end: float
-    words: list[Word]
+    words: list[Word] = field(default_factory=list)
+    speaker: Optional[str] = None
 
 
 @dataclass
@@ -32,97 +35,66 @@ class TranscriptionResult:
     text: str
     duration: float
     segments: list[Segment]
+    has_speakers: bool = False
 
 
 class TranscriptionError(Exception):
     """Raised when transcription fails."""
 
-    pass
-
 
 def transcribe_audio(
     audio_path: Path,
-    model_name: str = "mlx-community/parakeet-tdt-0.6b-v3",
+    backend: str = "parakeet",
+    model_name: Optional[str] = None,
     chunk_duration: float = 120.0,
     word_timestamps: bool = False,
+    language: Optional[str] = None,
+    diarize: bool = False,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
+    hf_token: Optional[str] = None,
+    compute_type: str = "int8",
+    batch_size: int = 8,
 ) -> TranscriptionResult:
+    """Dispatch to the selected transcription backend.
+
+    Backends:
+        parakeet: NVIDIA Parakeet v3 via MLX. Fast on Apple Silicon. English +
+            24 other European languages. No speaker diarization.
+        whisperx: OpenAI Whisper (faster-whisper) + pyannote diarization.
+            Multilingual including Hindi/Indic; supports speaker labels. Slower.
     """
-    Transcribe an audio file using Parakeet MLX.
-
-    Args:
-        audio_path: Path to the audio file (WAV format, 16kHz mono).
-        model_name: Name of the Parakeet model to use.
-        chunk_duration: Duration in seconds for chunking long audio.
-        word_timestamps: Whether to include word-level timestamps.
-
-    Returns:
-        TranscriptionResult with text, duration, and segments.
-
-    Raises:
-        TranscriptionError: If transcription fails.
-    """
-    try:
-        from parakeet_mlx import from_pretrained
-    except ImportError:
-        raise TranscriptionError(
-            "parakeet-mlx not installed. Please install it with: pip install parakeet-mlx"
-        )
-
     if not audio_path.exists():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-    try:
-        # Load the model
-        model = from_pretrained(model_name)
-
-        # Transcribe with chunking for long audio
-        result = model.transcribe(
-            str(audio_path),
-            chunk_duration=chunk_duration,
-            overlap_duration=15.0,
-        )
-
-        # Build segments from sentences
-        segments = []
-        max_end_time = 0.0
-        for sentence in result.sentences:
-            # Collect words for this segment if word timestamps requested
-            segment_words = []
-            if word_timestamps and hasattr(result, "tokens"):
-                for token in result.tokens:
-                    # Check if token falls within this sentence's time range
-                    if (
-                        hasattr(token, "start")
-                        and hasattr(token, "end")
-                        and token.start >= sentence.start
-                        and token.end <= sentence.end
-                    ):
-                        segment_words.append(
-                            Word(
-                                text=token.text.strip(),
-                                start=token.start,
-                                end=token.end,
-                            )
-                        )
-
-            segments.append(
-                Segment(
-                    text=sentence.text.strip(),
-                    start=sentence.start,
-                    end=sentence.end,
-                    words=segment_words,
-                )
+    backend = backend.lower()
+    if backend == "parakeet":
+        if diarize:
+            raise TranscriptionError(
+                "Diarization is not supported by the parakeet backend. "
+                "Use --backend whisperx for speaker labels."
             )
-            max_end_time = max(max_end_time, sentence.end)
-
-        # Calculate duration from the last segment's end time
-        duration = max_end_time
-
-        return TranscriptionResult(
-            text=result.text.strip(),
-            duration=duration,
-            segments=segments,
+        from .backends.parakeet import transcribe as _transcribe
+        return _transcribe(
+            audio_path=audio_path,
+            model_name=model_name or "mlx-community/parakeet-tdt-0.6b-v3",
+            chunk_duration=chunk_duration,
+            word_timestamps=word_timestamps,
         )
-
-    except Exception as e:
-        raise TranscriptionError(f"Transcription failed: {e}")
+    if backend == "whisperx":
+        from .backends.whisperx import transcribe as _transcribe
+        return _transcribe(
+            audio_path=audio_path,
+            model_name=model_name or "large-v3",
+            language=language,
+            word_timestamps=word_timestamps,
+            diarize=diarize,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+            hf_token=hf_token,
+            compute_type=compute_type,
+            batch_size=batch_size,
+        )
+    raise TranscriptionError(
+        f"Unknown backend: {backend!r}. Choose 'parakeet' or 'whisperx'."
+    )

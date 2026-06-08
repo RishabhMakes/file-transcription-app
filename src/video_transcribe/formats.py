@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .transcribe import TranscriptionResult
+from .transcribe import Segment, TranscriptionResult
 
 
 def format_timestamp_srt(seconds: float) -> str:
@@ -26,45 +26,43 @@ def format_timestamp_vtt(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
+def _line(segment: Segment, text: str) -> str:
+    if segment.speaker:
+        return f"[{segment.speaker}]: {text}"
+    return text
+
+
 def to_txt(result: TranscriptionResult) -> str:
-    """Convert transcription to plain text."""
+    """Plain text. If diarized, one segment per line with speaker prefix."""
+    if result.has_speakers:
+        return "\n".join(_line(s, s.text) for s in result.segments if s.text)
     return result.text
 
 
 def to_srt(result: TranscriptionResult, word_timestamps: bool = False) -> str:
-    """
-    Convert transcription to SRT subtitle format.
-
-    Args:
-        result: Transcription result.
-        word_timestamps: If True, create entries for each word.
-
-    Returns:
-        SRT formatted string.
-    """
-    lines = []
+    lines: list[str] = []
     counter = 1
 
     if word_timestamps:
-        # Word-level SRT
         for segment in result.segments:
             for word in segment.words:
                 if word.text.strip():
                     start = format_timestamp_srt(word.start)
                     end = format_timestamp_srt(word.end)
+                    speaker = word.speaker or segment.speaker
+                    text = f"[{speaker}]: {word.text.strip()}" if speaker else word.text.strip()
                     lines.append(f"{counter}")
                     lines.append(f"{start} --> {end}")
-                    lines.append(word.text.strip())
+                    lines.append(text)
                     lines.append("")
                     counter += 1
     else:
-        # Segment-level SRT
         for segment in result.segments:
             start = format_timestamp_srt(segment.start)
             end = format_timestamp_srt(segment.end)
             lines.append(f"{counter}")
             lines.append(f"{start} --> {end}")
-            lines.append(segment.text)
+            lines.append(_line(segment, segment.text))
             lines.append("")
             counter += 1
 
@@ -72,63 +70,46 @@ def to_srt(result: TranscriptionResult, word_timestamps: bool = False) -> str:
 
 
 def to_vtt(result: TranscriptionResult, word_timestamps: bool = False) -> str:
-    """
-    Convert transcription to WebVTT subtitle format.
-
-    Args:
-        result: Transcription result.
-        word_timestamps: If True, create entries for each word.
-
-    Returns:
-        VTT formatted string.
-    """
     lines = ["WEBVTT", ""]
 
     if word_timestamps:
-        # Word-level VTT
         for segment in result.segments:
             for word in segment.words:
                 if word.text.strip():
                     start = format_timestamp_vtt(word.start)
                     end = format_timestamp_vtt(word.end)
+                    speaker = word.speaker or segment.speaker
+                    text = f"[{speaker}]: {word.text.strip()}" if speaker else word.text.strip()
                     lines.append(f"{start} --> {end}")
-                    lines.append(word.text.strip())
+                    lines.append(text)
                     lines.append("")
     else:
-        # Segment-level VTT
         for segment in result.segments:
             start = format_timestamp_vtt(segment.start)
             end = format_timestamp_vtt(segment.end)
             lines.append(f"{start} --> {end}")
-            lines.append(segment.text)
+            lines.append(_line(segment, segment.text))
             lines.append("")
 
     return "\n".join(lines)
 
 
 def to_json(result: TranscriptionResult, word_timestamps: bool = False) -> str:
-    """
-    Convert transcription to JSON format.
-
-    Args:
-        result: Transcription result.
-        word_timestamps: If True, include word-level timestamps.
-
-    Returns:
-        JSON formatted string.
-    """
-    data = {
+    data: dict = {
         "text": result.text,
         "duration": result.duration,
+        "has_speakers": result.has_speakers,
         "segments": [],
     }
 
     for segment in result.segments:
-        seg_data = {
+        seg_data: dict = {
             "start": segment.start,
             "end": segment.end,
             "text": segment.text,
         }
+        if segment.speaker:
+            seg_data["speaker"] = segment.speaker
 
         if word_timestamps and segment.words:
             seg_data["words"] = [
@@ -136,6 +117,7 @@ def to_json(result: TranscriptionResult, word_timestamps: bool = False) -> str:
                     "word": word.text,
                     "start": word.start,
                     "end": word.end,
+                    **({"speaker": word.speaker} if word.speaker else {}),
                 }
                 for word in segment.words
             ]
@@ -151,15 +133,6 @@ def save_transcript(
     format: str,
     word_timestamps: bool = False,
 ) -> None:
-    """
-    Save transcription result to a file.
-
-    Args:
-        result: Transcription result.
-        output_path: Path to save the output file.
-        format: Output format (txt, srt, vtt, json).
-        word_timestamps: Include word-level timestamps.
-    """
     formatters = {
         "txt": lambda r: to_txt(r),
         "srt": lambda r: to_srt(r, word_timestamps),
